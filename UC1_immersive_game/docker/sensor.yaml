@@ -1,0 +1,456 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: DEFAULT
+  labels:
+    sensors.argoproj.io/sensor-controller-instanceid: argo-events
+    # sensor controller will use this label to match with it's own version
+    # do not remove
+    argo-events-sensor-version: v0.11
+spec:
+  template:
+    spec:
+      containers:
+        - name: "sensor"
+          image: "argoproj/sensor:v0.11"
+          imagePullPolicy: Always
+      serviceAccountName: argo-events-sa
+  dependencies:
+    - name: "DEFAULT:handlerequest"
+  eventProtocol:
+    type: "HTTP"
+    http:
+      port: "9300"
+  triggers:
+    - template:
+        name: immersive-game-trigger
+        group: argoproj.io
+        version: v1alpha1
+        resource: workflows
+        source:
+          inline: |
+            apiVersion: argoproj.io/v1alpha1
+            kind: Workflow
+            metadata:
+              # Workflow name passed through 'name'
+              name: "OVERRIDE"
+              labels:
+                osm_ns: OVERRIDE
+            spec:
+              entrypoint: handlerequest
+              arguments:
+                parameters:
+                # ~~~~~~~~~~~~~~~~~~~
+                # Common Parameters
+                # ~~~~~~~~~~~~~~~~~~~
+                - name: operation
+                  value: OVERRIDE
+                - name: osm_ip
+                  value: OVERRIDE
+                - name: osm_username
+                  value: admin
+                - name: osm_password
+                  value: admin
+                - name: osm_project
+                  value: admin
+                - name: osm_ns
+                  # Network service name e.g. 'sky_balls'
+                  value: OVERRIDE
+                - name: metrics_broker_ip
+                  value: OVERRIDE
+                - name: metrics_broker_port
+                  value: OVERRIDE
+                - name: vnfd_name
+                  # Either 'transcoder_2_9_0_gpu_vnfd' or 'transcoder_2_9_0_cpu_vnfd'
+                  value: OVERRIDE
+                - name: vnfd_index
+                  # Either '2' for the gpu vnfd or '3' for the cpu vnfd
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                # vTranscoder Parameters
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                - name: gpu_node
+                  # '0' for gpu vnfd, '1' for cpu vnfd
+                  value: OVERRIDE
+                - name: player_index
+                  # Either '1' or '2'
+                  value: OVERRIDE
+                - name: produce_profile
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~
+                # vReplay Parameters
+                # ~~~~~~~~~~~~~~~~~~~
+                - name: SessionID
+                  value: OVERRIDE
+                - name: BrokerEndpoint
+                  value: OVERRIDE
+                - name: TimestampTopic
+                  value: OVERRIDE
+                - name: GameStateTopic
+                  value: OVERRIDE
+                - name: OutputTopic
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~
+                # vSpectator Parameters
+                # ~~~~~~~~~~~~~~~~~~~~~~
+                - name: kafka_ip
+                  value: OVERRIDE
+                - name: internal_kafka_ip
+                  value: OVERRIDE
+                - name: RMQ_URL
+                  value: OVERRIDE
+                - name: osm_url
+                  value: OVERRIDE
+                - name: profile
+                  value: OVERRIDE
+                - name: download_speed
+                  value: OVERRIDE
+                - name: upload_speed
+                  value: OVERRIDE
+                - name: visdom_ip
+                  value: OVERRIDE
+                - name: simulate_stalls
+                  value: OVERRIDE
+                - name: processing_speed
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                # Common Termination Parameter
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                - name: uuid
+                  value: OVERRIDE
+                        
+              templates:
+              - name: handlerequest
+                steps:
+                - - name: spawn-transcoder
+                    template: spawn-transcoder
+                    when: "{{workflow.parameters.operation}} == \"spawn_transcoder\""
+
+                - - name: spawn-replay
+                    template: spawn-replay
+                    when: "{{workflow.parameters.operation}} == \"spawn_replay\""
+
+                - - name: spawn-spectator
+                    template: spawn-spectator
+                    when: "{{workflow.parameters.operation}} == \"spawn_spectator\""
+            
+                - - name: terminate-transcoder
+                    template: terminate
+                    when: "{{workflow.parameters.operation}} == \"terminate_transcoder\""
+
+                - - name: terminate-replay
+                    template: terminate
+                    when: "{{workflow.parameters.operation}} == \"terminate_replay\""
+
+                - - name: terminate-spectator
+                    template: terminate
+                    when: "{{workflow.parameters.operation}} == \"terminate_spectator\""
+
+                        
+              - name: terminate
+                dag:
+                  tasks:
+                  - name: delete
+                    templateRef:
+                      name: workflow-base
+                      template: delete
+                    arguments:
+                      parameters:
+                      - name: label_name
+                        value: "event_uuid"
+                      - name: label_value
+                        value: '{{workflow.parameters.uuid}}'
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+
+            
+              - name: spawn-transcoder
+                # This step is being called on 'spawn-transcoder' event.
+                #
+                # 1. Retrieve ipaddress and port of the vBroker
+                # 2. Spawn transcoder with given Day0 parameters plus ip/port of vBroker
+                dag:
+                  tasks:
+                  - name: vbroker-ipaddress
+                    templateRef:
+                      name: workflow-base
+                      template: script-vnfr-poll
+                    arguments:
+                      parameters:
+                      - name: poll
+                        value: "false"
+                      - name: osm_ip
+                        value: "{{workflow.parameters.osm_ip}}"
+                      - name: osm_ns
+                        value: "{{workflow.parameters.osm_ns}}"
+                      - name: jq_query
+                        # 3 - vbroker entry in vnfs array
+                        value: ".vnfs[3].vim_info.host_ip"
+                      - name: jq_query_value
+                        value: "\"NA\""
+                      - name: timeout
+                        value: "-1"
+            
+                  - name: vbroker-port
+                    templateRef:
+                      name: workflow-base
+                      template: script-vnfr-poll
+                    arguments:
+                      parameters:
+                      - name: poll
+                        value: "false"
+                      - name: osm_ip
+                        value: "{{workflow.parameters.osm_ip}}"
+                      - name: osm_ns
+                        value: "{{workflow.parameters.osm_ns}}"
+                      - name: jq_query
+                        # 3 - vbroker entry in vnfs array
+                        value: .vnfs[3].vim_info.service.service_ports.\"9092\"
+                      - name: jq_query_value
+                        value: "\"NA\""
+                      - name: timeout
+                        value: "-1"
+
+                  - name: vtranscoder
+                    dependencies: [vbroker-ipaddress, vbroker-port]
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index}}"
+                      - name: action_params
+                        value: '{"gpu_node": "{{workflow.parameters.gpu_node}}", "_VNF_IDX": "{{workflow.parameters.player_index}}", "input_broker_topic": "{{workflow.parameters.player_index}}_profile_0", "input_broker_ip": "{{tasks.vbroker-ipaddress.outputs.result}}", "input_broker_port": "{{tasks.vbroker-port.outputs.result}}", "send_broker_ip": "{{tasks.vbroker-ipaddress.outputs.result}}", "send_broker_port": "{{tasks.vbroker-port.outputs.result}}", "produce_profiles": [{{workflow.parameters.produce_profile}}], "metrics_broker_ip": "{{workflow.parameters.metrics_broker_ip}}", "metrics_broker_port": "{{workflow.parameters.metrics_broker_port}}"}'
+                      - name: service_ports
+                        value: '["18090", "18091", "18092"]'
+
+              - name: spawn-replay
+                dag:
+                  tasks:
+                  - name: vreplay
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index}}"
+                      - name: action_params
+                        value: '{"SessionID": "{{workflow.parameters.SessionID}}", "BrokerEndpoint": "{{workflow.parameters.BrokerEndpoint}}", "TimestampTopic": "{{workflow.parameters.TimestampTopic}}", "GameStateTopic": "{{workflow.parameters.GameStateTopic}}", "OutputTopic": "{{workflow.parameters.OutputTopic}}"}'
+                      - name: service_ports
+                        value: '[]'
+
+
+              - name: spawn-spectator
+                dag:
+                  tasks:
+                  - name: spectator
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index}}"
+                      - name: action_params
+                        value: '{"kafka_ip": "{{workflow.parameters.kafka_ip}}", "internal_kafka_ip": "{{workflow.parameters.internal_kafka_ip}}", "RMQ_URL": "{{workflow.parameters.RMQ_URL}}", "osm_url": "{{workflow.parameters.osm_url}}", "profile": "{{workflow.parameters.profile}}", "download_speed": "{{workflow.parameters.download_speed}}", "visdom_ip": "{{workflow.parameters.visdom_ip}}", "simulate_stalls": "{{workflow.parameters.simulate_stalls}}", "processing_speed": "{{workflow.parameters.processing_speed}}"}'
+                      - name: service_ports
+                        value: '[]'
+
+
+      resourceParameters:
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: event_uuid
+          dest: metadata.name
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+          dest: metadata.labels.osm_ns
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: operation
+            value: DEFAULT
+          dest: spec.arguments.parameters.0.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.1.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_username
+            value: admin
+          dest: spec.arguments.parameters.2.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_password
+            value: admin
+          dest: spec.arguments.parameters.3.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_project
+            value: admin
+          dest: spec.arguments.parameters.4.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+            value: DEFAULT
+          dest: spec.arguments.parameters.5.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: metrics_broker_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.6.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: metrics_broker_port
+            value: DEFAULT
+          dest: spec.arguments.parameters.7.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_name
+            value: DEFAULT
+          dest: spec.arguments.parameters.8.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_index
+            value: DEFAULT
+          dest: spec.arguments.parameters.9.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: gpu_node
+            value: DEFAULT
+          dest: spec.arguments.parameters.10.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: player_index
+            value: DEFAULT
+          dest: spec.arguments.parameters.11.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: produce_profile
+            value: DEFAULT
+          dest: spec.arguments.parameters.12.value
+
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: SessionID
+            value: DEFAULT
+          dest: spec.arguments.parameters.13.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: BrokerEndpoint
+            value: DEFAULT
+          dest: spec.arguments.parameters.14.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: TimestampTopic
+            value: DEFAULT
+          dest: spec.arguments.parameters.15.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: GameStateTopic
+            value: DEFAULT
+          dest: spec.arguments.parameters.16.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: OutputTopic
+            value: DEFAULT
+          dest: spec.arguments.parameters.17.value
+
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: kafka_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.18.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: internal_kafka_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.19.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: RMQ_URL
+            value: DEFAULT
+          dest: spec.arguments.parameters.20.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_url
+            value: DEFAULT
+          dest: spec.arguments.parameters.21.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: profile
+            value: DEFAULT
+          dest: spec.arguments.parameters.22.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: download_speed
+            value: DEFAULT
+          dest: spec.arguments.parameters.23.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: upload_speed
+            value: DEFAULT
+          dest: spec.arguments.parameters.24.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: visdom_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.25.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: simulate_stalls
+            value: DEFAULT
+          dest: spec.arguments.parameters.26.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: processing_speed
+            value: DEFAULT
+          dest: spec.arguments.parameters.27.value
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: uuid
+            value: DEFAULT
+          dest: spec.arguments.parameters.28.value

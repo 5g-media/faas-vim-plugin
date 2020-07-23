@@ -1,0 +1,590 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: DEFAULT
+  labels:
+    sensors.argoproj.io/sensor-controller-instanceid: argo-events
+    # sensor controller will use this label to match with it's own version
+    # do not remove
+    argo-events-sensor-version: v0.11
+spec:
+  template:
+    spec:
+      containers:
+        - name: "sensor"
+          image: "argoproj/sensor:v0.11"
+          imagePullPolicy: Always
+      serviceAccountName: argo-events-sa
+  dependencies:
+    - name: "DEFAULT:handlerequest"
+  eventProtocol:
+    type: "HTTP"
+    http:
+      port: "9300"
+  triggers:
+    - template:
+        name: cognitive-trigger
+        group: argoproj.io
+        version: v1alpha1
+        resource: workflows
+        source:
+          inline: |
+            apiVersion: argoproj.io/v1alpha1
+            kind: Workflow
+            metadata:
+              # Workflow name passed through 'name'
+              name: "OVERRIDE"
+              labels:
+                osm_ns: OVERRIDE
+            spec:
+              entrypoint: handlerequest
+              arguments:
+                parameters:
+                # ~~~~~~~~~~~~~~~~~~
+                # Common Parameters
+                # ~~~~~~~~~~~~~~~~~~
+                - name: operation
+                  value: OVERRIDE
+                - name: osm_ip
+                  value: OVERRIDE
+                - name: osm_username
+                  value: admin
+                - name: osm_password
+                  value: admin
+                - name: osm_project
+                  value: admin
+                - name: osm_ns
+                  value: OVERRIDE
+                - name: mode
+                  value: OVERRIDE
+                - name: broadcaster_ip
+                  value: OVERRIDE
+
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~
+                # Common related to CPU/GPU
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~
+                - name: vnfd_name_speech
+                  value: OVERRIDE
+                - name: vnfd_index_speech
+                  value: OVERRIDE
+
+                - name: vnfd_name_detection
+                  value: OVERRIDE
+                - name: vnfd_index_detection
+                  value: OVERRIDE
+
+
+                # ~~~~~~~~~~~~~~~~~~~
+                # vSpeech Parameters
+                # ~~~~~~~~~~~~~~~~~~~
+                - name: req_method_speech
+                  value: OVERRIDE
+                - name: req_url_speech
+                  value: OVERRIDE
+                - name: decode_type
+                  value: OVERRIDE
+                - name: decode_metadata
+                  value: OVERRIDE
+                - name: beam_width
+                  value: OVERRIDE
+                - name: lm_alpha
+                  value: OVERRIDE
+                - name: lm_beta
+                  value: OVERRIDE
+                - name: n_features
+                  value: OVERRIDE
+                - name: n_context
+                  value: OVERRIDE
+                - name: pre_allo_frames
+                  value: OVERRIDE
+                - name: audio_sample_rate
+                  value: OVERRIDE
+                - name: vad_mode
+                  value: OVERRIDE
+                - name: vad_debounce_time
+                  value: OVERRIDE
+                - name: ws_port_speech
+                  value: OVERRIDE
+
+
+                # vDetection Parameters
+                - name: req_method_detection
+                  value: OVERRIDE
+                - name: req_url_detection
+                  value: OVERRIDE
+                - name: save_local
+                  value: OVERRIDE
+                - name: stream_timeout
+                  value: OVERRIDE
+                - name: use_recognition
+                  value: OVERRIDE
+                - name: cnn_model
+                  value: OVERRIDE
+                - name: min_confidence
+                  value: OVERRIDE
+                - name: processing_timeout
+                  value: OVERRIDE
+                - name: use_age_gender_expressions
+                  value: "false"
+                - name: use_gpu
+                  value: "false"
+                - name: ws_port_detection
+                  value: OVERRIDE
+
+
+              templates:
+              - name: handlerequest
+                steps:
+                - - name: vspeech
+                    template: vspeech-instantiate
+                    # Deploy vspeech instance and configure splitter to connect it
+                    when: "{{workflow.parameters.operation}} == \"vspeech\""
+                - - name: vdetection
+                    template: vdetection-instantiate
+                    # Deploy vspeech instance and configure splitter to connect it
+                    when: "{{workflow.parameters.operation}} == \"vdetection\""
+                - - name: vspeech-vdetection
+                    template: vspeech-vdetection-instantiate
+                    # Deploy vspeech instance and configure splitter to connect it
+                    when: "{{workflow.parameters.operation}} == \"vspeech_vdetection\""
+
+
+
+              - name: vspeech-instantiate
+                dag:
+                  tasks:
+                  - name: vspeech-offload
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name_speech}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index_speech}}"
+                      - name: action_params
+                        value: '{"req_method": "{{workflow.parameters.req_method_speech}}", "req_url": "{{workflow.parameters.req_url_speech}}", "debug": "true", "decode_metadata": "{{workflow.parameters.decode_metadata}}"}'
+                      - name: service_ports
+                        value: '["8885"]'
+
+                  - name: vspeech-ipaddress
+                    dependencies: [vspeech-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vspeech-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.host_ip'
+
+                  - name: vspeech-port
+                    dependencies: [vspeech-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vspeech-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.service.service_ports.\"8885\"'
+
+                  - name: splitter-day1
+                    dependencies: [vspeech-ipaddress, vspeech-port]
+                    templateRef:
+                      name: workflow-base
+                      template: config-client
+                    arguments:
+                      parameters:
+                      - name: cmd
+                        value: "curl -X POST 'http://{{workflow.parameters.osm_ip}}:5001/osm/reconfigure/{{workflow.parameters.osm_ns}}/splitter_vnfd.2' -H  'Content-Type: application/json' -d '{\"coe_action_params\": {\"action_params\": {\"vspeech_host\": \"{{tasks.vspeech-ipaddress.outputs.result}}\", \"vspeech_port\": \"{{tasks.vspeech-port.outputs.result}}\"}}}'"
+
+
+
+
+
+              - name: vspeech-vdetection-instantiate
+                dag:
+                  tasks:
+                  - name: vspeech-offload
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name_speech}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index_speech}}"
+                      - name: action_params
+                        value: '{"req_method": "{{workflow.parameters.req_method_speech}}", "req_url": "{{workflow.parameters.req_url_speech}}", "debug": "true", "decode_metadata": "true"}'
+                      - name: service_ports
+                        value: '["8885"]'
+
+                  - name: vdetection-offload
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name_detection}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index_detection}}"
+                      - name: action_params
+                        value: '{"req_method": "{{workflow.parameters.req_method_detection}}", "req_url": "{{workflow.parameters.req_url_detection}}", "use_age_gender_expressions": "{{workflow.parameters.use_age_gender_expressions}}", "use_gpu": "{{workflow.parameters.use_gpu}}", "debug": "true"}'
+                      - name: service_ports
+                        value: '["9995"]'
+
+                  - name: vspeech-ipaddress
+                    dependencies: [vspeech-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vspeech-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.host_ip'
+
+                  - name: vspeech-port
+                    dependencies: [vspeech-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vspeech-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.service.service_ports.\"8885\"'
+
+                  - name: vdetection-ipaddress
+                    dependencies: [vdetection-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vdetection-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.host_ip'
+
+                  - name: vdetection-port
+                    dependencies: [vdetection-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vdetection-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.service.service_ports.\"9995\"'
+
+                  - name: splitter-day1
+                    dependencies: [vspeech-ipaddress, vspeech-port, vdetection-ipaddress, vdetection-port]
+                    templateRef:
+                      name: workflow-base
+                      template: config-client
+                    arguments:
+                      parameters:
+                      - name: cmd
+                        value: "curl -X POST 'http://{{workflow.parameters.osm_ip}}:5001/osm/reconfigure/{{workflow.parameters.osm_ns}}/splitter_vnfd.2' -H  'Content-Type: application/json' -d '{\"coe_action_params\": {\"action_params\": {\"vspeech_host\": \"{{tasks.vspeech-ipaddress.outputs.result}}\", \"vspeech_port\": \"{{tasks.vspeech-port.outputs.result}}\", \"vdetection_host\": \"{{tasks.vdetection-ipaddress.outputs.result}}\", \"vdetection_port\": \"{{tasks.vdetection-port.outputs.result}}\"}}}'"
+
+
+
+
+
+              - name: vdetection-instantiate
+                dag:
+                  tasks:
+                  - name: vdetection-offload
+                    templateRef:
+                      name: workflow-base
+                      template: offload
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name_detection}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index_detection}}"
+                      - name: action_params
+                        value: '{"req_method": "{{workflow.parameters.req_method_detection}}", "req_url": "{{workflow.parameters.req_url_detection}}", "use_age_gender_expressions": "{{workflow.parameters.use_age_gender_expressions}}", "use_gpu": "{{workflow.parameters.use_gpu}}", "debug": "true"}'
+                      - name: service_ports
+                        value: '["9995"]'
+
+                  - name: vdetection-ipaddress
+                    dependencies: [vdetection-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vdetection-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.host_ip'
+
+                  - name: vdetection-port
+                    dependencies: [vdetection-offload]
+                    templateRef:
+                      name: workflow-base
+                      template: jq-script
+                    arguments:
+                      parameters:
+                      - name: json_str
+                        value: "{{tasks.vdetection-offload.outputs.result}}"
+                      - name: jq_query
+                        value: '.response.result.service.service_ports.\"9995\"'
+
+                  - name: splitter-day1
+                    dependencies: [vdetection-ipaddress, vdetection-port]
+                    templateRef:
+                      name: workflow-base
+                      template: config-client
+                    arguments:
+                      parameters:
+                      - name: cmd
+                        value: "curl -X POST 'http://{{workflow.parameters.osm_ip}}:5001/osm/reconfigure/{{workflow.parameters.osm_ns}}/splitter_vnfd.2' -H  'Content-Type: application/json' -d '{\"coe_action_params\": {\"action_params\": {\"vdetection_host\": \"{{tasks.vdetection-ipaddress.outputs.result}}\", \"vdetection_port\": \"{{tasks.vdetection-port.outputs.result}}\"}}}'"
+
+
+
+
+
+      resourceParameters:
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: event_uuid
+          dest: metadata.name
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+          dest: metadata.labels.osm_ns
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: operation
+            value: DEFAULT
+          dest: spec.arguments.parameters.0.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.1.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_username
+            value: admin
+          dest: spec.arguments.parameters.2.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_password
+            value: admin
+          dest: spec.arguments.parameters.3.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_project
+            value: admin
+          dest: spec.arguments.parameters.4.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+            value: DEFAULT
+          dest: spec.arguments.parameters.5.value
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: mode
+            value: DEFAULT
+          dest: spec.arguments.parameters.6.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: broadcaster_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.7.value
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_name_speech
+            value: DEFAULT
+          dest: spec.arguments.parameters.8.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_index_speech
+            value: DEFAULT
+          dest: spec.arguments.parameters.9.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_name_detection
+            value: DEFAULT
+          dest: spec.arguments.parameters.10.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_index_detection
+            value: DEFAULT
+          dest: spec.arguments.parameters.11.value
+
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: req_method_speech
+            value: DEFAULT
+          dest: spec.arguments.parameters.12.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: req_url_speech
+            value: DEFAULT
+          dest: spec.arguments.parameters.13.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: decode_type
+            value: DEFAULT
+          dest: spec.arguments.parameters.14.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: decode_metadata
+            value: DEFAULT
+          dest: spec.arguments.parameters.15.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: beam_width
+            value: DEFAULT
+          dest: spec.arguments.parameters.16.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: lm_alpha
+            value: DEFAULT
+          dest: spec.arguments.parameters.17.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: lm_beta
+            value: DEFAULT
+          dest: spec.arguments.parameters.18.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: n_features
+            value: DEFAULT
+          dest: spec.arguments.parameters.19.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: n_context
+            value: DEFAULT
+          dest: spec.arguments.parameters.20.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: pre_allo_frames
+            value: DEFAULT
+          dest: spec.arguments.parameters.21.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: audio_sample_rate
+            value: DEFAULT
+          dest: spec.arguments.parameters.22.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vad_mode
+            value: DEFAULT
+          dest: spec.arguments.parameters.23.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vad_debounce_time
+            value: DEFAULT
+          dest: spec.arguments.parameters.24.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: ws_port_speech
+            value: DEFAULT
+          dest: spec.arguments.parameters.25.value
+
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: req_method_detection
+            value: DEFAULT
+          dest: spec.arguments.parameters.26.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: req_url_detection
+            value: DEFAULT
+          dest: spec.arguments.parameters.27.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: save_local
+            value: DEFAULT
+          dest: spec.arguments.parameters.28.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: stream_timeout
+            value: DEFAULT
+          dest: spec.arguments.parameters.29.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: use_recognition
+            value: DEFAULT
+          dest: spec.arguments.parameters.30.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: cnn_model
+            value: DEFAULT
+          dest: spec.arguments.parameters.31.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: min_confidence
+            value: DEFAULT
+          dest: spec.arguments.parameters.32.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: processing_timeout
+            value: DEFAULT
+          dest: spec.arguments.parameters.33.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: use_age_gender_expressions
+            value: "false"
+          dest: spec.arguments.parameters.34.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: use_gpu
+            value: "false"
+          dest: spec.arguments.parameters.35.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: ws_port_detection
+            value: DEFAULT
+          dest: spec.arguments.parameters.36.value
+

@@ -1,0 +1,8 @@
+{
+    "placement": {
+        "invoker-selector": {
+            "processor": "gpu"
+         },
+        "action-antiaffinity": "true"
+    }
+}

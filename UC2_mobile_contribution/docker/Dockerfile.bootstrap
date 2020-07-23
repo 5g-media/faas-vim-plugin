@@ -1,0 +1,3 @@
+FROM docker5gmedia/5gmedia-bootstrap-base:0.1
+
+ADD sensor.yaml /

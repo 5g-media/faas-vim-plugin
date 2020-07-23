@@ -1,0 +1,8 @@
+FROM docker5gmedia/5gmedia-base
+
+
+ADD action_pong.py /action/exec
+
+RUN chmod +x /action/exec
+
+ENV LISTENING_PORT 5001

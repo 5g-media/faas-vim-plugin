@@ -1,0 +1,9 @@
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: default
+  name: secret-pod-crud
+rules:
+- apiGroups: ["", "batch", "extensions"] # "" indicates the core API group
+  resources: ["secrets", "pods", "pods/log", "jobs", "services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]

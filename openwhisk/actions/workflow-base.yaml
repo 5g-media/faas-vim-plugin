@@ -1,0 +1,238 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: workflow-base
+spec:
+  templates:
+  - name: offload
+    # Deploy and start a FaaS VNF *after* the network service has started.
+    #
+    # Per design this flow is identical as possible to FaaS VIM plugin;
+    # - deploy VNF via offload action
+    # - poll pod via get_pod action until it is in 'Running' state
+    #
+    # Parameters:
+    # event_uuid: unique event identifier. The POD is labeled with it
+    # ow_token: OpenWhisk token
+    # ns_name: network service name the VNF belongs to
+    # vnfd_name: vnfd-id of the VNF as defined in its vnfd
+    # vnfd_index: the 'member-vnf-index' of this VNF in its NSD
+    # action_params: day0 parameters (json)
+    # service_ports: application ports to open as ingress (array)
+    #
+    # Return: record (json) of the created FaaS VNF (as returned by get_pod action) or
+    #         "Timeout" if timeout (str) reached
+    inputs:
+      parameters:
+      - name: event_uuid
+      - name: ow_token
+      - name: ns_name
+      - name: vnfd_name
+      - name: vnfd_index
+      - name: action_params
+      - name: service_ports
+    script:
+      image: docker5gmedia/python-curl-jq
+      command: [sh]
+      source: |
+        generate_post_data()
+        {
+          cat <<EOF
+        {
+          "event_uuid": "{{inputs.parameters.event_uuid}}",
+          "ro_vim_vm_name": "{{inputs.parameters.ns_name}}-{{inputs.parameters.vnfd_index}}-{{inputs.parameters.vnfd_name}}-1",
+          "action": "$1",
+          "url": "$2",
+          "offload-service-url": "$3",
+          "coe_action_params": {
+            "action_params": {{inputs.parameters.action_params}},
+            "service_ports": {{inputs.parameters.service_ports}}
+          }
+        }
+        EOF
+        }
+
+        generate_post_data2()
+        {
+          cat <<EOF
+        {
+          "offload-service-url": "$1",
+          "flowId": "$2"
+        }
+        EOF
+        }
+        b64token="$(python -c "import base64; print(base64.b64encode('{{inputs.parameters.ow_token}}'.encode()).decode())")"
+        token="$(curl --insecure -X POST https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/tokens -H 'accept: application/json' -H 'content-type: application/json' -d '{"username": "{{workflow.parameters.osm_username}}", "password": "{{workflow.parameters.osm_password}}", "project_id": "{{workflow.parameters.osm_project}}"}')"
+        token_id="$(echo $token | jq -r '.id')"
+        ns_list="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        ns_id="$(echo $ns_list | jq -r '.[] | select(.name=="{{inputs.parameters.ns_name}}") | .id')"
+        nsr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content/$ns_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        # substract 1 from vnfd_index to access proper array entry in datamodel
+        constituent_vnfr_ref=$(( {{inputs.parameters.vnfd_index}} - 1 ))
+        vnfr_id="$(echo $nsr | jq -r --arg i "$constituent_vnfr_ref" '."constituent-vnfr-ref"[$i|fromjson]')"
+        vnfr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/vnf_instances/$vnfr_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+
+        vim_account_id="$(echo $vnfr | jq -r '."vim-account-id"')"
+        vim_account="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/vim_accounts/$vim_account_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        offload_service_url="$(echo $vim_account | jq -r '.config["offload-service-url"]')"
+        vim_url="$(echo $vim_account | jq -r '."vim_url"')"
+
+        vnfd_id="$(echo $vnfr | jq -r '."vnfd-id"')"
+        vnfd="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/vnfpkgm/v1/vnf_packages/$vnfd_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        image="$(echo $vnfd | jq -r '."vdu"[0]."image"')"
+
+        activation="$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/offload?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data $image $vim_url $offload_service_url)")"
+        flow_id="$(echo $activation | jq -r '.response.result.detail.flowId')"
+
+        i=0
+        timeout=60
+        until [ "$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/get_pod?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data2 $offload_service_url $flow_id)" | jq -r '.response.result.phase')" = "Running" -o $i -gt $timeout ]; do
+           sleep 1
+           i=$((i+1))
+        done
+        if [ $i -gt $timeout ]; then
+          echo "TIMEOUT"
+        else
+          echo "$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/get_pod?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data2 $offload_service_url $flow_id)")"
+        fi
+
+
+  - name: delete
+    # Terminate/delete FaaS VNF filtering it with the provided
+    # label.
+    #
+    # Ideally this label is the event_uuid label this VNF got spawned on behalf.
+    #
+    # Parameters:
+    # ns_name: network service name the VNF belongs to
+    # ow_token: OpenWhisk token
+    # label_name: the name of the kubernetes label
+    # label_value: the value of the kubernetes label
+    #
+    # Return: record (json) of the created FaaS VNF (as returned by get_pod action) or
+    #         "Timeout" if timeout (str) reached
+    inputs:
+      parameters:
+      - name: ns_name
+      - name: ow_token
+      - name: label_name
+      - name: label_value
+    script:
+      image: docker5gmedia/python-curl-jq
+      command: [sh]
+      source: |
+        generate_post_data()
+        {
+          cat <<EOF
+        {
+          "offload-service-url": "$1",
+          "label_name": "{{inputs.parameters.label_name}}",
+          "label_value": "{{inputs.parameters.label_value}}"
+        }
+        EOF
+        }
+        b64token="$(python -c "import base64; print(base64.b64encode('{{inputs.parameters.ow_token}}'.encode()).decode())")"
+        token="$(curl --insecure -X POST https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/tokens -H 'accept: application/json' -H 'content-type: application/json' -d '{"username": "{{workflow.parameters.osm_username}}", "password": "{{workflow.parameters.osm_password}}", "project_id": "{{workflow.parameters.osm_project}}"}')"
+        token_id="$(echo $token | jq -r '.id')"
+        ns_list="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        ns_id="$(echo $ns_list | jq -r '.[] | select(.name=="{{inputs.parameters.ns_name}}") | .id')"
+        nsr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content/$ns_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+
+        # TODO: we rely that all VNFs in same NFVi, thus using bootstrap VNFD
+        # substract 1 from vnfd_index to access proper array entry in datamodel
+        constituent_vnfr_ref=$(( 1 - 1 ))
+        vnfr_id="$(echo $nsr | jq -r --arg i "$constituent_vnfr_ref" '."constituent-vnfr-ref"[$i|fromjson]')"
+        vnfr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/vnf_instances/$vnfr_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+
+        vim_account_id="$(echo $vnfr | jq -r '."vim-account-id"')"
+        vim_account="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/vim_accounts/$vim_account_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+        offload_service_url="$(echo $vim_account | jq -r '.config["offload-service-url"]')"
+        vim_url="$(echo $vim_account | jq -r '."vim_url"')"
+
+        echo "$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/delete_pod_event?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data $offload_service_url)")"
+
+  - name: b64-str
+    inputs:
+      parameters:
+      - name: str
+    script:
+      image: python:alpine3.6
+      command: [python]
+      source: |
+        import base64
+        print(base64.b64encode('{{inputs.parameters.str}}'.encode()).decode())
+
+ 
+  - name: jq-script
+    inputs:
+      parameters:
+      - name: json_str
+      - name: jq_query
+    script:
+      image: docker5gmedia/appropriate-curl-jq
+      command: [sh]
+      source: |
+        echo '{{inputs.parameters.json_str}}' | jq -r {{inputs.parameters.jq_query}}
+
+
+  - name: config-client
+    inputs:
+      parameters:
+      - name: cmd
+    script:
+      image: appropriate/curl:latest
+      command: [sh]
+      source: |
+        echo "$({{inputs.parameters.cmd}})"
+
+
+  - name: print-message
+    inputs:
+      parameters:
+      - name: message
+    container:
+      image: docker/whalesay:latest
+      command: [cowsay]
+      args: ["{{inputs.parameters.message}}"]
+
+
+  - name: script-vnfr-poll
+    # Poll VNFR (in case poll=true) until it's running. Then query one of its attributes as denoted
+    # by jq_query and jq_query_value. timeout is relevant for polling only
+    #
+    # Parameters:
+    # poll: whether or not to poll the VNFR (boolean). If false, then skip polling
+    # osm_ip: ipaddress of OSM
+    # osm_ns: network service name
+    # jq_query: query used to identify VNFR inside NS (str in jq format)
+    # jq_query_value: query used to retrieve an attbute (str in jq format)
+    # timeout: polling timeout (seconds)
+    #
+    # Return: TIMEOUT in case of timeout or the attribute value
+    inputs:
+      parameters:
+      - name: poll
+      - name: osm_ip
+      - name: osm_ns
+      - name: jq_query
+      - name: jq_query_value
+      - name: timeout
+    script:
+      image: docker5gmedia/appropriate-curl-jq
+      command: [sh]
+      source: |
+        if [ {{inputs.parameters.poll}} = "true" ]; then
+          i=0
+          until [ "$(curl http://{{inputs.parameters.osm_ip}}:5001/osm/{{inputs.parameters.osm_ns}} | jq -r {{inputs.parameters.jq_query}})" = "{{inputs.parameters.jq_query_value}}" -o $i -gt {{inputs.parameters.timeout}} ]; do
+             sleep 1
+             i=$((i+1))
+          done
+          if [ $i -gt {{inputs.parameters.timeout}} ]; then
+            echo "TIMEOUT"
+          else
+            echo "$(curl http://{{inputs.parameters.osm_ip}}:5001/osm/{{inputs.parameters.osm_ns}} | jq -r {{inputs.parameters.jq_query}})"
+          fi
+        else  
+          echo "$(curl http://{{inputs.parameters.osm_ip}}:5001/osm/{{inputs.parameters.osm_ns}} | jq -r {{inputs.parameters.jq_query}})"
+        fi
+        

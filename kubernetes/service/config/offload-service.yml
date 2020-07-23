@@ -1,0 +1,14 @@
+# Exposes Offload Service using NodePort
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    name: offloadservice
+  name: ow-offloadservice
+spec:
+  ports:
+  - port: 8080
+    name: http-api
+  selector:
+    app: offloadserver
+  type: NodePort

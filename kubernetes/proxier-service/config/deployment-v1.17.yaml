@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxierserver
+  namespace: argo-events
+spec:
+  selector:
+    matchLabels:
+      app: proxierserver
+  replicas: 1
+  minReadySeconds: 1
+  revisionHistoryLimit: 5
+  template:
+    metadata:
+      labels:
+        app: proxierserver
+    spec:
+      containers:
+      - name: proxierserver
+        image: docker5gmedia/proxier-server:0.1
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+              path: /hello
+              port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 10

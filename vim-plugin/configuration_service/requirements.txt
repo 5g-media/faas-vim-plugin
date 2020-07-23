@@ -1,0 +1,4 @@
+six>=1.6.0
+gevent==1.2.1
+flask==0.12
+requests==2.13.0

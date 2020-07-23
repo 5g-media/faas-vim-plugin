@@ -1,0 +1,27 @@
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: argo-events
+  name: proxier-roles
+rules:
+- apiGroups: ["argoproj.io"]
+  resources: ["workflows", "sensors", "gateways"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps", "services"]
+  verbs: ["get", "list", "create", "delete"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: service-account-proxier-roles
+  namespace: argo-events
+subjects:
+- kind: Group
+  name: system:serviceaccounts:argo-events
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: proxier-roles
+  apiGroup: rbac.authorization.k8s.io

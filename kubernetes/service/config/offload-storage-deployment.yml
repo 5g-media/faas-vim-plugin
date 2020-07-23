@@ -1,0 +1,37 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: ow-storageserver
+spec:
+  replicas: 1
+  minReadySeconds: 1
+  revisionHistoryLimit: 5
+  template:
+    metadata:
+      labels:
+        app: offloadstorage
+    spec:
+      nodeSelector:
+        offloader: "true"
+      containers:
+      - name: offloadstorage
+        image: dgrove/ow-offload-storage:0.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+              path: /hello
+              port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        volumeMounts:
+        - mountPath: /ow-offload-storage
+          name: ow-offload-storage
+      volumes:
+      - name: ow-offload-storage
+        # for dev/testing on a single node cluster, emptyDir is good enough
+        emptyDir: {}
+        # for multi-node clusters, must use persistentVolumeClaim
+        #persistentVolumeClaim:
+          #claimName: offload-storage-pvc

@@ -1,0 +1,29 @@
+packages:
+  mobile-contribution:
+    version: 1.0
+    actions:
+      session_instantiate:
+        function: session_instantiate.py
+        web: true
+        annotations:
+          provide-api-key: true
+      session_instantiate_poll:
+        function: session_instantiate_poll.py
+        web: true
+        annotations:
+          provide-api-key: true
+      session_initialize:
+        function: session_initialize.py
+        web: true
+        annotations:
+          provide-api-key: true
+      session_initialize_poll:
+        function: session_initialize_poll.py
+        web: true
+        annotations:
+          provide-api-key: true
+      session_finalize:
+        function: session_finalize.py
+        web: true
+        annotations:
+          provide-api-key: true

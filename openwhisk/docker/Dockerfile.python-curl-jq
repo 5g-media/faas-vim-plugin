@@ -1,0 +1,7 @@
+# Build:
+# docker build --tag "docker5gmedia/python-curl-jq" --force-rm=true --file ./Dockerfile.python-curl-jq . 
+
+FROM python:alpine3.6
+
+RUN apk upgrade --update \
+  && apk add --no-cache bash jq curl wget

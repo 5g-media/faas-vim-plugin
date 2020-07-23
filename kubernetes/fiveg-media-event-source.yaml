@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fiveg-media-event-source
+  labels:
+    # do not remove
+    argo-events-event-source-version: v0.11
+data:
+  handlerequest: |-
+    # port to run HTTP server on
+    port: "12000"
+    # endpoint to listen to
+    endpoint: "/handlerequest"
+    # HTTP request method to allow. In this case, only POST requests are accepted
+    method: "POST"

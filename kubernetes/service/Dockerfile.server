@@ -1,0 +1,11 @@
+FROM docker5gmedia/ow-offload-serverprereqs:0.1
+
+ENV FLASK_PROXY_PORT 8080
+ENV CONF_PROXY_PORT 8081
+
+RUN mkdir -p /offloadServer
+ADD server.py /offloadServer/
+ADD invoker.py /offloadServer/
+ADD conf.py /offloadServer/
+
+CMD ["/bin/bash", "-c", "cd offloadServer && python -u server.py"]

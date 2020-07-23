@@ -1,0 +1,14 @@
+# Build:
+# docker build --tag "docker5gmedia/5gmedia-bootstrap" --force-rm=true --file ./Dockerfile.bootstrap .
+
+FROM docker5gmedia/5gmedia-base
+
+RUN pip install --no-cache-dir pyyaml
+
+ADD gateway.yaml /
+
+ADD bootstrap.py /action/exec
+
+RUN chmod +x /action/exec
+
+WORKDIR /

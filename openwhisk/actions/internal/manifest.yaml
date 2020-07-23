@@ -1,0 +1,33 @@
+packages:
+  k8s_pkg:
+    version: 1.0
+    actions:
+      nop:
+        function: action_nop.py
+        annotations:
+          provide-api-key: true
+      get_pod:
+        function: action_get_pod.py
+        annotations:
+          provide-api-key: true
+      get_pod_event:
+        function: action_get_pod_event.py
+        annotations:
+          provide-api-key: true
+      delete_pod:
+        function: action_delete_job.py
+        annotations:
+          provide-api-key: true
+      delete_pod_event:
+        function: action_delete_job_event.py
+        annotations:
+          provide-api-key: true
+      offload:
+        function: offload.py
+        annotations:
+          provide-api-key: true
+          get_pod: k8s_pkg/get_pod
+          delete_pod: k8s_pkg/delete_pod
+          delete_pod_event: k8s_pkg/delete_pod_event
+          nop: k8s_pkg/nop
+          get_pod_event: k8s_pkg/get_pod_event

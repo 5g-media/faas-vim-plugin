@@ -1,0 +1,336 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: DEFAULT
+  labels:
+    sensors.argoproj.io/sensor-controller-instanceid: argo-events
+    # sensor controller will use this label to match with it's own version
+    # do not remove
+    argo-events-sensor-version: v0.11
+spec:
+  template:
+    spec:
+      containers:
+        - name: "sensor"
+          image: "argoproj/sensor:v0.11"
+          imagePullPolicy: Always
+      serviceAccountName: argo-events-sa
+  dependencies:
+    - name: "DEFAULT:handlerequest"
+  eventProtocol:
+    type: "HTTP"
+    http:
+      port: "9300"
+  triggers:
+    - template:
+        name: vcdn-trigger
+        group: argoproj.io
+        version: v1alpha1
+        resource: workflows
+        source:
+          inline: |
+            apiVersion: argoproj.io/v1alpha1
+            kind: Workflow
+            metadata:
+              # Workflow name passed through 'name'
+              name: "OVERRIDE"
+              labels:
+                osm_ns: OVERRIDE
+            spec:
+              entrypoint: handlerequest
+              arguments:
+                parameters:
+                # ~~~~~~~~~~~~~~~~~~~
+                # Common Parameters
+                # ~~~~~~~~~~~~~~~~~~~
+                - name: operation
+                  value: OVERRIDE
+                - name: osm_ip
+                  value: OVERRIDE
+                - name: osm_username
+                  value: admin
+                - name: osm_password
+                  value: admin
+                - name: osm_project
+                  value: admin
+                - name: osm_ns
+                  value: OVERRIDE
+                - name: vnfd_name
+                  value: OVERRIDE
+                - name: vnfd_index
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                # vCache Parameters
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                - name: kafka_broker
+                  value: OVERRIDE
+                - name: origin_ip
+                  value: OVERRIDE
+                - name: origin_port
+                  value: OVERRIDE
+                - name: fqdn
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                # vDns host, port
+                # ~~~~~~~~~~~~~~~~~~~~~~~
+                - name: vdns_ip
+                  value: OVERRIDE
+                - name: vdns_port
+                  value: OVERRIDE
+
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                # Common Termination Parameter
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                - name: uuid
+                  value: OVERRIDE
+              templates:
+              - name: handlerequest
+                steps:
+                - - name: spawn-vcache
+                    template: spawn-vcache
+                    when: "{{workflow.parameters.operation}} == \"spawn_vcache\""
+
+                - - name: terminate-vcache
+                    template: terminate
+                    when: "{{workflow.parameters.operation}} == \"terminate_vcache\""
+
+
+              - name: terminate
+                dag:
+                  tasks:
+                  - name: delete
+                    templateRef:
+                      name: workflow-base
+                      template: delete
+                    arguments:
+                      parameters:
+                      - name: label_name
+                        value: "event_uuid"
+                      - name: label_value
+                        value: '{{workflow.parameters.uuid}}'
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+
+                  - name: deregister
+                    dependencies: [delete]
+                    templateRef:
+                      name: workflow-base
+                      template: config-client
+                    arguments:
+                      parameters:
+                      - name: cmd
+                        value: "curl -X DELETE 'http://{{workflow.parameters.vdns_ip}}:{{workflow.parameters.vdns_port}}/dns' -H  'Content-Type: application/json' -H 'X-Api-Key: secret' -d '{\"hostname\": \"{{workflow.parameters.fqdn}}\"}'"
+
+              - name: spawn-vcache
+                dag:
+                  tasks:
+                  - name: vcache
+                    template: vcache
+                    arguments:
+                      parameters:
+                      - name: event_uuid
+                        value: "{{workflow.name}}"
+                      - name: ow_token
+                        value: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
+                      - name: ns_name
+                        value: '{{workflow.parameters.osm_ns}}'
+                      - name: vnfd_name
+                        value: "{{workflow.parameters.vnfd_name}}"
+                      - name: vnfd_index
+                        value: "{{workflow.parameters.vnfd_index}}"
+                      - name: action_params
+                        value: '{"kafka_broker": "{{workflow.parameters.kafka_broker}}", "origin_port": "{{workflow.parameters.origin_port}}", "origin_ip": "{{workflow.parameters.origin_ip}}", "fqdn": "{{workflow.parameters.fqdn}}"}'
+                      - name: service_ports
+                        value: '["9090", "8080", "80"]'
+
+              - name: vcache
+                inputs:
+                  parameters:
+                  - name: event_uuid
+                  - name: ow_token
+                  - name: ns_name
+                  - name: vnfd_name
+                  - name: vnfd_index
+                  - name: action_params
+                  - name: service_ports
+                script:
+                  image: docker5gmedia/python-curl-jq
+                  command: [sh]
+                  source: |
+                    generate_post_data()
+                    {
+                      cat <<EOF
+                    {
+                      "event_uuid": "{{inputs.parameters.event_uuid}}",
+                      "ro_vim_vm_name": "{{inputs.parameters.ns_name}}-{{inputs.parameters.vnfd_index}}-{{inputs.parameters.vnfd_name}}-1",
+                      "action": "$1",
+                      "url": "$2",
+                      "offload-service-url": "$3",
+                      "coe_action_params": {
+                        "action_params": {{inputs.parameters.action_params}},
+                        "service_ports": {{inputs.parameters.service_ports}}
+                      }
+                    }
+                    EOF
+                    }
+                    generate_post_data2()
+                    {
+                      cat <<EOF
+                    {
+                      "offload-service-url": "$1",
+                      "flowId": "$2"
+                    }
+                    EOF
+                    }
+                    generate_post_data3()
+                    {
+                      cat <<EOF
+                    {
+                      "value": "$1"
+                    }
+                    EOF
+                    }
+                    generate_post_data4()
+                    {
+                      cat <<EOF
+                    {
+                      "hostname": "{{workflow.parameters.fqdn}}",
+                      "ip": "192.168.252.14",
+                      "vcache_port": "$1"
+                    }
+                    EOF
+                    }
+                    b64token="$(python -c "import base64; print(base64.b64encode('{{inputs.parameters.ow_token}}'.encode()).decode())")"
+                    token="$(curl --insecure -X POST https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/tokens -H 'accept: application/json' -H 'content-type: application/json' -d '{"username": "{{workflow.parameters.osm_username}}", "password": "{{workflow.parameters.osm_password}}", "project_id": "{{workflow.parameters.osm_project}}"}')"
+                    token_id="$(echo $token | jq -r '.id')"
+                    ns_list="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+                    ns_id="$(echo $ns_list | jq -r '.[] | select(.name=="{{inputs.parameters.ns_name}}") | .id')"
+                    nsr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/ns_instances_content/$ns_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+                    # substract 1 from vnfd_index to access proper array entry in datamodel
+                    constituent_vnfr_ref=$(( {{inputs.parameters.vnfd_index}} - 1 ))
+                    vnfr_id="$(echo $nsr | jq -r --arg i "$constituent_vnfr_ref" '."constituent-vnfr-ref"[$i|fromjson]')"
+                    vnfr="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/nslcm/v1/vnf_instances/$vnfr_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+                    vim_account_id="$(echo $vnfr | jq -r '."vim-account-id"')"
+                    vim_account="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/admin/v1/vim_accounts/$vim_account_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+                    offload_service_url="$(echo $vim_account | jq -r '.config["offload-service-url"]')"
+                    vim_url="$(echo $vim_account | jq -r '."vim_url"')"
+                    vnfd_id="$(echo $vnfr | jq -r '."vnfd-id"')"
+                    vnfd="$(curl --insecure https://{{workflow.parameters.osm_ip}}:9999/osm/vnfpkgm/v1/vnf_packages/$vnfd_id -H 'accept: application/json' -H 'content-type: application/json' -H "Authorization: Bearer $token_id")"
+                    image="$(echo $vnfd | jq -r '."vdu"[0]."image"')"
+                    activation="$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/offload?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data $image $vim_url $offload_service_url)")"
+                    flow_id="$(echo $activation | jq -r '.response.result.detail.flowId')"
+                    i=0
+                    timeout=60
+                    until [ "$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/get_pod?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data2 $offload_service_url $flow_id)" | jq -r '.response.result.phase')" = "Running" -o $i -gt $timeout ]; do
+                       sleep 1
+                       i=$((i+1))
+                    done
+                    if [ $i -gt $timeout ]; then
+                      echo "TIMEOUT"
+                    else
+                      # retrieve pod info and inject its mapped port as day 1
+                      record="$(curl --insecure -X POST $vim_url/api/v1/namespaces/guest/actions/k8s_pkg/get_pod?blocking=true -H 'Content-Type: application/json' -H "Authorization: Basic $b64token" --data "$(generate_post_data2 $offload_service_url $flow_id)")"
+                      echo $record
+                      record_port="$(echo $record | jq -r '.response.result.service.service_ports."9090"')"
+                      echo $record_port
+                      record_ip="$(echo $record | jq -r '.response.result.pod_ip')"
+                      echo $record_ip
+                      sleep 5
+                      echo "$(curl -X POST http://$record_ip:8081/conf/vcache_port -H 'Content-Type: application/json' --data "$(generate_post_data3 $record_port)")"
+                      # register vcache with vdns
+                      echo "$(curl -X POST http://{{workflow.parameters.vdns_ip}}:{{workflow.parameters.vdns_port}}/dns -H 'Content-Type: application/json' -H 'X-Api-Key: secret' --data "$(generate_post_data4 $record_port)")"
+                    fi
+
+
+      resourceParameters:
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: event_uuid
+          dest: metadata.name
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+          dest: metadata.labels.osm_ns
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: operation
+            value: DEFAULT
+          dest: spec.arguments.parameters.0.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.1.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_username
+            value: admin
+          dest: spec.arguments.parameters.2.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_password
+            value: admin
+          dest: spec.arguments.parameters.3.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_project
+            value: admin
+          dest: spec.arguments.parameters.4.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: osm_ns
+            value: DEFAULT
+          dest: spec.arguments.parameters.5.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_name
+            value: DEFAULT
+          dest: spec.arguments.parameters.6.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vnfd_index
+            value: DEFAULT
+          dest: spec.arguments.parameters.7.value
+
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: kafka_broker
+            value: DEFAULT
+          dest: spec.arguments.parameters.8.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: origin_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.9.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: origin_port
+            value: DEFAULT
+          dest: spec.arguments.parameters.10.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: fqdn
+            value: DEFAULT
+          dest: spec.arguments.parameters.11.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vdns_ip
+            value: DEFAULT
+          dest: spec.arguments.parameters.12.value
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: vdns_port
+            value: DEFAULT
+          dest: spec.arguments.parameters.13.value
+
+        - src:
+            event: "DEFAULT:handlerequest"
+            path: uuid
+            value: DEFAULT
+          dest: spec.arguments.parameters.14.value

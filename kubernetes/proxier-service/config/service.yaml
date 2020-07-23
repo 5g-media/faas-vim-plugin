@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    name: proxierserver
+  name: proxierserver
+  namespace: argo-events
+spec:
+  ports:
+  - port: 8080
+    name: http-api
+  selector:
+    app: proxierserver
+  type: NodePort
